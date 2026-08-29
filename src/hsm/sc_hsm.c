@@ -250,7 +250,16 @@ bool wait_button_pressed(void) {
     uint32_t val = EV_PRESS_BUTTON;
 #ifndef ENABLE_EMULATION
     uint16_t opts = get_device_options();
+#ifdef PICOKEYS_PRESENCE_DEFAULT_ON
+    /* Inverted relative to upstream: presence is required unless the host
+       explicitly opts out by setting HSM_OPT_BOOTSEL_BUTTON. A device that
+       has never been told otherwise therefore demands a press for every
+       private-key operation, rather than demanding one only if somebody
+       remembered to ask. */
+    if (!(opts & HSM_OPT_BOOTSEL_BUTTON)) {
+#else
     if (opts & HSM_OPT_BOOTSEL_BUTTON) {
+#endif
         queue_try_add(&card_to_usb_q, &val);
         do{
             queue_remove_blocking(&usb_to_card_q, &val);
