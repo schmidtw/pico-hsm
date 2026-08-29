@@ -100,6 +100,24 @@ if(NOT ESP_PLATFORM)
     )
     target_compile_options(pico_hsm PRIVATE ${COMMON_COMPILE_OPTIONS})
 
+    if(DEFINED WS2812_PIN)
+        message(STATUS "WS2812 LED pin:\t\t GP${WS2812_PIN}")
+        target_compile_definitions(pico_hsm PRIVATE PICO_DEFAULT_WS2812_PIN=${WS2812_PIN})
+    endif()
+
+    if(LED_ORDER STREQUAL "RGB")
+        message(STATUS "LED colour order:\t RGB")
+        target_compile_definitions(pico_hsm PRIVATE PICOKEYS_LED_ORDER_RGB=1)
+    endif()
+
+    if(DEFINED LED_BRIGHTNESS)
+        if(LED_BRIGHTNESS LESS 0 OR LED_BRIGHTNESS GREATER 15)
+            message(FATAL_ERROR "LED_BRIGHTNESS must be 0-15 (got ${LED_BRIGHTNESS})")
+        endif()
+        message(STATUS "LED brightness:\t\t ${LED_BRIGHTNESS}/15")
+        target_compile_definitions(pico_hsm PRIVATE PICOKEYS_DEFAULT_LED_BRIGHTNESS=${LED_BRIGHTNESS})
+    endif()
+
     pico_keys_apply_strict_flags(
         SOURCES ${SOURCES}
         FILTER_REGEX "/src/hsm/|/pico-keys-sdk/src/|/pico-keys-sdk/config/"
