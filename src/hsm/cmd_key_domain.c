@@ -44,6 +44,12 @@ int cmd_key_domain(void) {
     if (p2 >= MAX_KEY_DOMAINS) {
         return SW_WRONG_P1P2();
     }
+    /* Physical presence for the destructive paths: 0x3 deletes a key
+       domain and 0x4 resets its share count, either of which discards the
+       DKEK and with it the ability to clone keys to another device. */
+    if ((p1 == 0x3 || p1 == 0x4) && wait_button_pressed_always() == true) {
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     file_t *tf_kd = search_file(EF_KEY_DOMAIN);
     if (!tf_kd) {
         return SW_EXEC_ERROR();

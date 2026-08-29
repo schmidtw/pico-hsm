@@ -20,6 +20,10 @@
 
 int cmd_update_ef(void) {
     uint8_t p1 = P1(apdu), p2 = P2(apdu);
+    /* Physical presence: destructive without it. */
+    if (wait_button_pressed_always() == true) { //timeout or cancelled
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     uint16_t fid = (p1 << 8) | p2;
     uint8_t *data = NULL;
     uint16_t offset = 0;

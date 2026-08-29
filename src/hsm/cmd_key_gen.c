@@ -27,6 +27,10 @@ int cmd_key_gen(void) {
     if (!isUserAuthenticated) {
         return SW_SECURITY_STATUS_NOT_SATISFIED();
     }
+    /* Physical presence: destructive without it. */
+    if (wait_button_pressed_always() == true) { //timeout or cancelled
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     if (p2 == 0xB3) {
         key_size = 64;
     }

@@ -20,6 +20,10 @@
 #include "kek.h"
 
 int cmd_reset_retry(void) {
+    /* Physical presence: destructive without it. */
+    if (wait_button_pressed_always() == true) { //timeout or cancelled
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     if (P2(apdu) != 0x81) {
         return SW_REFERENCE_NOT_FOUND();
     }

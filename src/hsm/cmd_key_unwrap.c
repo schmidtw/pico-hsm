@@ -29,6 +29,10 @@ int cmd_key_unwrap(void) {
     if (!isUserAuthenticated) {
         return SW_SECURITY_STATUS_NOT_SATISFIED();
     }
+    /* Physical presence: destructive without it. */
+    if (wait_button_pressed_always() == true) { //timeout or cancelled
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     uint8_t *data = apdu.data;
     uint16_t data_len = apdu.nc;
     if (data_len == 0) { // New style

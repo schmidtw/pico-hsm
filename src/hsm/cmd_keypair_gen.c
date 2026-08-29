@@ -29,6 +29,10 @@ int cmd_keypair_gen(void) {
     if (!isUserAuthenticated) {
         return SW_SECURITY_STATUS_NOT_SATISFIED();
     }
+    /* Physical presence: destructive without it. */
+    if (wait_button_pressed_always() == true) { //timeout or cancelled
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     int ret = 0;
 
     //sc_asn1_print_tags(apdu.data, apdu.nc);

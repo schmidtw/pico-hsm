@@ -22,6 +22,10 @@ int cmd_delete_file(void) {
     if (!isUserAuthenticated) {
         return SW_SECURITY_STATUS_NOT_SATISFIED();
     }
+    /* Physical presence: destructive without it. */
+    if (wait_button_pressed_always() == true) { //timeout or cancelled
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
 
     if (apdu.nc == 0) {
         ef = currentEF;

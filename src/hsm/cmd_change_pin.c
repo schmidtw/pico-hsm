@@ -20,6 +20,10 @@
 #include "kek.h"
 
 int cmd_change_pin(void) {
+    /* Physical presence: destructive without it. */
+    if (wait_button_pressed_always() == true) { //timeout or cancelled
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     if (P1(apdu) == 0x0) {
         if (P2(apdu) == 0x81 || P2(apdu) == 0x88) {
             file_t *file_pin = NULL;
