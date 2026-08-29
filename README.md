@@ -1,3 +1,194 @@
+# Pico HSM — schmidtw fork (Waveshare RP2350)
+
+> **This is a fork of [polhenarejos/pico-hsm](https://github.com/polhenarejos/pico-hsm).**
+> Branch `waveshare-pico2350/v6.6` = upstream tag `v6.6` plus board-specific
+> changes for a Waveshare RP2350 board with a WS2812 LED on GP16.
+> `master` mirrors upstream; build from the branch, not from `master`.
+>
+> Devices built from this tree report USB manufacturer `schmidtw/pico-hsm`.
+> Upstream's documentation follows below and still applies.
+
+## Target hardware
+
+| | |
+|---|---|
+| Board | Waveshare RP2350 (`PICO_BOARD=pico2`) |
+| Flash | 2 MB and 4 MB variants both work — no build change needed |
+| Status LED | WS2812 on GP16, RGB channel order |
+| USB ID | `20A0:4230` (Nitrokey HSM) |
+
+The USB ID is deliberate. `libccid` resolves readers against the **stock**
+`ifd-ccid.bundle/Contents/Info.plist` only — it ignores the bundle it was
+loaded from — so a supplementary CCID bundle can never register a new
+VID/PID. Any other ID means patching `pcsc-lite-ccid` on every host.
+
+## Prerequisites
+
+Fedora ships everything needed; no third-party ARM toolchain required.
+
+```sh
+sudo dnf install -y arm-none-eabi-gcc-cs arm-none-eabi-gcc-cs-c++ \
+                    arm-none-eabi-newlib arm-none-eabi-binutils-cs \
+                    cmake make git python3
+```
+
+The Pico SDK is a separate checkout and is **not** vendored here. Only the
+`tinyusb` and `mbedtls` submodules are needed — a full recursive clone pulls
+far more than this build uses:
+
+```sh
+git clone -b 2.2.0 --depth 1 https://github.com/raspberrypi/pico-sdk.git
+git -C pico-sdk submodule update --init --depth 1 lib/tinyusb lib/mbedtls
+```
+
+Pin `2.2.0`; that is the version this branch is built and tested against.
+
+`cmake` also fetches `picotool` and re-checks-out `mbedtls` (pinned to
+`v3.6.6` by the SDK) from GitHub at **configure** time, so the first
+configure needs network access.
+
+## Build
+
+```sh
+git clone --recursive -b waveshare-pico2350/v6.6 \
+    https://github.com/schmidtw/pico-hsm.git
+cd pico-hsm
+
+# PICO_SDK_PATH must point at the pico-sdk checkout from above.
+PICO_SDK_PATH=../pico-sdk cmake -S . -B build \
+    -DPICO_BOARD=pico2 \
+    -DVIDPID=NitroHSM \
+    -DWS2812_PIN=16 \
+    -DLED_ORDER=RGB \
+    -DLED_BRIGHTNESS=2
+
+make -C build -j$(nproc)
+```
+
+| Flag | Purpose | Required |
+|---|---|---|
+| `PICO_BOARD=pico2` | RP2350 target; wrong value yields an incompatible UF2 family | yes |
+| `VIDPID=NitroHSM` | `20A0:4230` — the only ID Fedora's stock CCID driver recognises | **yes** |
+| `WS2812_PIN=16` | Selects the WS2812 driver and its GPIO. Omitted, the firmware drives GP25, which is not wired on this board | for the LED |
+| `LED_ORDER=RGB` | This board's LED is RGB-ordered; omitted, red and green appear swapped | cosmetic |
+| `LED_BRIGHTNESS=2` | 0–15 | cosmetic |
+
+`PICO_FLASH_SIZE_BYTES` is **not** needed. `low_flash.c` clamps the
+filesystem to the JEDEC-detected chip size, so one build serves both the
+2 MB and 4 MB boards.
+
+**Never pass `-DCMAKE_C_FLAGS`.** It replaces the Pico SDK toolchain's
+architecture flags and the build fails deep inside the SDK with a
+misleading spin-lock error. Use `target_compile_definitions` instead.
+
+Confirm the options reached the compiler:
+
+```sh
+tr ' ' '\n' < build/CMakeFiles/pico_hsm.dir/flags.make \
+    | grep -E 'WS2812|LED_ORDER|LED_BRIGHTNESS'
+```
+
+## Flash
+
+Hold **BOOTSEL** while plugging the board in, then:
+
+```sh
+cp build/pico_hsm.uf2 /run/media/$USER/RP2350/ && sync
+```
+
+The board reboots itself. A copy error at the end is normal — the device
+disconnects mid-write by design. Verify:
+
+```sh
+lsusb | grep 20a0:4230
+opensc-tool -l            # "Nitrokey Nitrokey HSM ... "
+```
+
+A UF2 only rewrites the program area; the filesystem partition survives
+reflashing, so **a reflashed device still holds its previous keys and PINs.**
+
+## Provisioning — required before first use
+
+`sc-hsm-tool --initialize` alone is **not sufficient** on a device that has
+been used before. `cmd_initialize.c` regenerates the device authentication
+key only when the old MKEK cannot be recovered:
+
+```c
+if (ret_mkek != PICOKEY_OK || !file_has_data(fdkey)) { ...regenerate... }
+```
+
+Initialising with an unchanged PIN recovers the old MKEK and deliberately
+preserves the existing device key. If that key was written by different
+firmware it cannot be parsed, and **every key generation afterwards fails
+with `CKR_GENERAL_ERROR` / SW `6400`**, no matter how often you reinitialise.
+
+Break MKEK recovery by initialising twice, with different PINs the first
+time — both the user PIN and the SO-PIN must differ, since recovering
+either one preserves the old key:
+
+```sh
+# Pass 1 - throwaway credentials. Both must differ from your real ones:
+# load_mkek() tries the user PIN and then the SO-PIN, and recovering
+# either one preserves the old device key.
+sc-hsm-tool --initialize --so-pin 00112233445566AA --pin 999111 --dkek-shares 1
+
+# Pass 2 - your real credentials. The throwaway MKEK is now unrecoverable,
+# so the device key is regenerated again and bound to these.
+sc-hsm-tool --initialize --so-pin "$SOPIN" --pin "$USERPIN" --dkek-shares 1
+```
+
+SO-PIN is exactly 16 hex characters; the user PIN is 6–15 characters.
+Power-cycle the board afterwards — `--initialize` rewrites the filesystem
+and the device may not respond until it is replugged.
+
+Then verify, because this is the step that silently fails:
+
+```sh
+pkcs11-tool --login --pin "$USERPIN" --keypairgen \
+    --key-type EC:secp384r1 --id 05 --label test
+```
+
+Success means provisioning worked. `CKR_GENERAL_ERROR` means the device key
+is still the old one — check that both PINs in pass 1 really differed from
+those in pass 2. Delete the test key when done.
+
+The same two passes can be driven from `pypicohsm`
+(`h.initialize(pin=..., sopin=..., dkek_shares=1, no_dev_cert=True)`),
+which is the path this procedure was verified against; `sc-hsm-tool` issues
+the same INITIALIZE APDU.
+
+## Python tooling
+
+`pypicohsm` and `pypicokey` were removed from PyPI (upstream issue #126).
+Mirrors exist under the [LibreKeys](https://github.com/librekeys) org
+(`pypicohsm`, `pypicokey-mirror`, `pycvc`). Install with
+`--system-site-packages` to reuse a distro `pyscard`, since building it
+needs `pcsc-lite-devel`.
+
+`PicoHSM()` defaults to PIN `648219` — always pass `PicoHSM(pin=...)`, or
+constructing it burns a user-PIN retry.
+
+Note that `pypicohsm`'s `initialize()` POSTs the device public key to
+`https://www.picokeys.com/pico/pico-hsm/cvc/` to obtain a signed
+certificate chain. **That endpoint returns 404.** Pass `no_dev_cert=True`
+to skip it; the firmware writes a self-signed chain itself and validates
+no issuer, so nothing is lost. Use `pycvc` if you want a chain you control.
+
+## Changes from upstream
+
+| Commit | Change |
+|---|---|
+| `cmake` | `WS2812_PIN`, `LED_ORDER`, `LED_BRIGHTNESS` build options |
+| `pico-keys-sdk` | build-time LED brightness and RGB colour-order defaults |
+| `hsm` | PKCS#15 token manufacturer reports `schmidtw/pico-hsm` |
+| `pico-keys-sdk` | USB manufacturer string reports `schmidtw/pico-hsm` |
+
+The product string stays `Pico Key`: interface descriptors are composed as
+`<product> <interface>`, so changing it would rename the CCID interface and
+pcscd's reader name.
+
+---
+
 # Pico HSM
 This project aims to transform a Raspberry Pi Pico or ESP32 microcontroller into a Hardware Security Module (HSM). The modified Pico or ESP32 board will be capable of generating and storing private keys, performing AES encryption or decryption, and signing data without exposing the private key. Specifically, the private key remains securely on the board and cannot be retrieved since it is encrypted within the flash memory.
 
