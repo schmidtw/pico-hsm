@@ -44,6 +44,14 @@ int cmd_initialize(void) {
         if (opts & HSM_OPT_SECURE_LOCK && !has_mkek_mask) {
             return SW_SECURITY_STATUS_NOT_SATISFIED();
         }
+        /* Require physical presence before wiping a provisioned device.
+           Deliberately uses the _always variant: INITIALIZE rewrites
+           EF_DEVOPS from tag 0x80, so honouring HSM_OPT_BOOTSEL_BUTTON
+           here would let any caller clear the bit and then wipe the
+           device. Must precede initialize_flash(). */
+        if (wait_button_pressed_always() == true) { //timeout or cancelled
+            return SW_SECURITY_STATUS_NOT_SATISFIED();
+        }
         int ret_mkek = load_mkek(mkek); //Try loading MKEK with previous session
         initialize_flash(true);
         scan_all();

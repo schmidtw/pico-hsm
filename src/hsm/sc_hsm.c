@@ -260,6 +260,22 @@ bool wait_button_pressed(void) {
     return val == EV_BUTTON_TIMEOUT;
 }
 
+/* Physical-presence check that cannot be turned off by the host.
+   wait_button_pressed() honours HSM_OPT_BOOTSEL_BUTTON in EF_DEVOPS, but
+   INITIALIZE rewrites EF_DEVOPS from APDU tag 0x80 - so any caller could
+   clear the bit and then wipe the device. This variant ignores device
+   options so the requirement is a property of the firmware. */
+bool wait_button_pressed_always(void) {
+    uint32_t val = EV_PRESS_BUTTON;
+#ifndef ENABLE_EMULATION
+    queue_try_add(&card_to_usb_q, &val);
+    do{
+        queue_remove_blocking(&usb_to_card_q, &val);
+    } while (val != EV_BUTTON_PRESSED && val != EV_BUTTON_TIMEOUT);
+#endif
+    return val == EV_BUTTON_TIMEOUT;
+}
+
 int parse_token_info(const file_t *f, int mode) {
     (void)f;
 #ifdef __FOR_CI
