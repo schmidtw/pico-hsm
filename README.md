@@ -60,7 +60,8 @@ PICO_SDK_PATH=../pico-sdk cmake -S . -B build \
     -DVIDPID=NitroHSM \
     -DWS2812_PIN=16 \
     -DLED_ORDER=RGB \
-    -DLED_BRIGHTNESS=2
+    -DLED_BRIGHTNESS=2 \
+    -DUP_BTN_TIMEOUT=15
 
 make -C build -j$(nproc)
 ```
@@ -72,6 +73,8 @@ make -C build -j$(nproc)
 | `WS2812_PIN=16` | Selects the WS2812 driver and its GPIO. Omitted, the firmware drives GP25, which is not wired on this board | for the LED |
 | `LED_ORDER=RGB` | This board's LED is RGB-ordered; omitted, red and green appear swapped | cosmetic |
 | `LED_BRIGHTNESS=2` | 0–15 | cosmetic |
+| `UP_BTN_TIMEOUT=15` | Seconds to wait for a BOOT press. Omitted, the window falls back to a host-writable PHY record | **yes, for any gate to work** |
+| `REQUIRE_PRESENCE=ON` | Default. Requires a press for private-key *use*. `OFF` reverts to upstream (press only if the host opts in) | on by default |
 
 `PICO_FLASH_SIZE_BYTES` is **not** needed. `low_flash.c` clamps the
 filesystem to the JEDEC-detected chip size, so one build serves both the
@@ -104,8 +107,79 @@ lsusb | grep 20a0:4230
 opensc-tool -l            # "Nitrokey Nitrokey HSM ... "
 ```
 
+**Always confirm the board is running *your* build before testing anything:**
+
+```sh
+lsusb -d 20a0:4230 -v 2>/dev/null | grep iManufacturer
+```
+
+It must report `schmidtw/pico-hsm`. A stock image says `Pol Henarejos`.
+This is the cheapest way to catch the classic mistake of testing changes
+against firmware you never actually flashed.
+
 A UF2 only rewrites the program area; the filesystem partition survives
 reflashing, so **a reflashed device still holds its previous keys and PINs.**
+
+## Physical presence
+
+Upstream requires a button press only for a few operations, and only when
+the host has set `HSM_OPT_BOOTSEL_BUTTON` in `EF_DEVOPS`. Since INITIALIZE
+rewrites `EF_DEVOPS` from APDU tag `0x80`, any host could clear that bit
+and then wipe the device. This fork fixes both halves.
+
+### How you interact with it
+
+**Send the command, then press BOOT when the LED turns yellow.** Yellow
+means the device is waiting for you. Nothing happens without the press:
+after `UP_BTN_TIMEOUT` seconds the command is refused with `6982` and the
+device is unchanged. Checks run *before* anything is written, so a refusal
+never leaves half-finished state.
+
+### Two layers, deliberately different
+
+**Destructive commands — always gated, cannot be turned off.** Compiled in
+and independent of `EF_DEVOPS`, so no host can disable them:
+
+| INS | Command |
+|---|---|
+| `50` | INITIALIZE — erases every key and file |
+| `E4` | DELETE_FILE — deletes keys and certificates |
+| `46` / `48` | KEYPAIR_GEN / KEY_GEN — overwrite an existing key id |
+| `74` | UNWRAP — can overwrite a key id |
+| `52` P1=3,4 | KEY_DOMAIN delete / reset shares — discards the DKEK |
+| `D7` | UPDATE_EF — overwrites certificates and data objects |
+| `24` / `2C` | CHANGE_PIN / RESET_RETRY — credential changes |
+| `1F` (rescue) | REBOOT_BOOTSEL |
+
+`1F` matters more than it looks: it drops the device into the UF2
+bootloader, from which arbitrary firmware can be written over USB with no
+further authentication. Ungated, it is a remote bypass of everything else
+here.
+
+**Private-key use — gated by default, host can opt out.** With
+`REQUIRE_PRESENCE=ON` (the default) every signature, decryption and key
+derivation needs a press. This is the upstream `HSM_OPT_BOOTSEL_BUTTON`
+check with its sense inverted: the bit now *disables* the requirement
+rather than enabling it, so a device that has never been configured is
+protected rather than exposed.
+
+To opt out, set the bit during initialize:
+
+```python
+h.initialize(pin=..., sopin=..., options=0x0101)   # 0x0100 disables presence
+```
+
+Note `EF_DEVOPS` is rewritten by every INITIALIZE, so an opt-out must be
+repeated each time the device is provisioned. Not asking for it is what
+gives you the secure state.
+
+### Consequences worth accepting on purpose
+
+- Recovery needs physical access. A device in another location cannot be
+  reinitialised, unblocked or re-PINned remotely.
+- Every key you generate — the root, and each intermediate — costs a press.
+- Read-only operations are untouched: `sc-hsm-tool` status, `LIST_KEYS`,
+  `SELECT_FILE`, `READ_BINARY` and PIN verification need no press.
 
 ## Provisioning — required before first use
 
@@ -182,6 +256,10 @@ no issuer, so nothing is lost. Use `pycvc` if you want a chain you control.
 | `pico-keys-sdk` | build-time LED brightness and RGB colour-order defaults |
 | `hsm` | PKCS#15 token manufacturer reports `schmidtw/pico-hsm` |
 | `pico-keys-sdk` | USB manufacturer string reports `schmidtw/pico-hsm` |
+| `hsm` | Physical presence required for destructive commands, independent of `EF_DEVOPS` |
+| `hsm` | Presence for private-key use defaults to on; `HSM_OPT_BOOTSEL_BUTTON` now opts *out* |
+| `pico-keys-sdk` | Build-time press-timeout floor, so the window is not a host-writable PHY record |
+| `pico-keys-sdk` | Rescue `REBOOT_BOOTSEL` requires a press |
 
 The product string stays `Pico Key`: interface descriptors are composed as
 `<product> <interface>`, so changing it would rename the CCID interface and
